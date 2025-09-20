@@ -1,0 +1,55 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  name: batch11
+  demands:
+    - agent.name -equals lin1
+
+variables:
+  ACR_NAME: 'mujjuacr-acr-sc'
+  IMAGE_NAME: 'taskimage'
+  RESOURCE_GROUP: 'myResourceGroup'
+  LOCATION: 'eastus'
+
+stages:
+- stage: Build
+  displayName: BuildAndPush
+  jobs:
+    - job: DockerBuild
+      displayName: Build Docker Image
+      steps:
+        - task: Docker@2
+          displayName: Build and Push Docker Image
+          inputs:
+            containerRegistry: 'mujjuacr-acr-sc'
+            repository: '$(IMAGE_NAME)'
+            command: 'buildAndPush'
+            Dockerfile: '**/Dockerfile'
+            tags: 'latest'
+
+- stage: Deploy
+  displayName: DeployContainers
+  dependsOn: Build
+  jobs:
+    - job: Deploy
+      displayName: Deploy Multiple Containers
+      steps:
+        - task: AzureCLI@2
+          displayName: Deploy Containers to Azure
+          inputs:
+            azureSubscription: 'batch11'
+            scriptType: 'bash'
+            scriptLocation: 'inlineScript'
+            inlineScript: |
+              az group create --name $(RESOURCE_GROUP) --location $(LOCATION)
+              for i in 1 0; do
+                az container create -g $(RESOURCE_GROUP) -n container$i \
+                  --image $(ACR_NAME).azurecr.io/$(IMAGE_NAME):latest \
+                  --cpu 1 --memory 1 \
+                  --environment-variables INPUT=$i \
+                  --registry-login-server $(ACR_NAME).azurecr.io \
+                  --registry-username 'mujjuacr123' \
+                  --registry-password $(az acr credential show --name $(ACR_NAME) --query "passwords[0].value" -o tsv)
