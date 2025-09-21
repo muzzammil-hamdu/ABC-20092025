@@ -1,32 +1,33 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:22.04 AS base
 
-RUN apt-get update && apt-get install -y cron bash dos2unix && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y cron bash && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -ms /bin/bash abc
 
+RUN mkdir -p /home/abc/myfolder && chown -R abc:abc /home/abc/myfolder
+
 WORKDIR /home/abc/myfolder
 
-COPY task.sh .
-RUN dos2unix task.sh && chmod +x task.sh && chown abc:abc task.sh
+FROM base AS intermediate
 
-RUN echo "* * * * * /bin/bash /home/abc/myfolder/task.sh 1 >> /home/abc/myfolder/cron.log 2>&1" > /etc/cron.d/mycron \
+COPY task.sh /home/abc/myfolder/task.sh
+
+RUN chmod +x /home/abc/myfolder/task.sh
+
+RUN echo "* * * * * /home/abc/myfolder/task.sh 1 >> /home/abc/myfolder/cron.log 2>&1" > /etc/cron.d/mycron \
     && chmod 0644 /etc/cron.d/mycron \
     && crontab -u abc /etc/cron.d/mycron
 
-FROM ubuntu:22.04
-
-RUN apt-get update && apt-get install -y bash cron && rm -rf /var/lib/apt/lists/*
-
-RUN useradd -ms /bin/bash abc
+FROM intermediate AS cleanup
 
 USER abc
-WORKDIR /home/abc/myfolder
+RUN /home/abc/myfolder/task.sh 0
 
-COPY --from=builder /home/abc/myfolder/task.sh .
-COPY --from=builder /etc/cron.d/mycron /etc/cron.d/mycron
+FROM cleanup AS create
 
-RUN chmod +x task.sh
-
-RUN /bin/bash task.sh 0
+USER abc
+RUN /home/abc/myfolder/task.sh 1
 
 CMD ["cron", "-f"]
