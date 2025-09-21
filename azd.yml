@@ -1,85 +1,55 @@
 trigger:
-- main
+  branches:
+    include:
+      - main
 
 pool:
-  name: 'batch11'
+  name: batch11
   demands:
     - agent.name -equals lin1
 
 variables:
+  ACR_NAME: 'mujjuacr-acr-sc'
+  IMAGE_NAME: 'taskimage'
   RESOURCE_GROUP: 'myResourceGroup'
-  ACR_NAME: 'mujjuacr123'
-  ACR_LOGIN_SERVER: 'mujjuacr123.azurecr.io'
-  IMAGE_NAME: 'myapp'
-  IMAGE_TAG: 'latest'
-  ACI_NAME: 'myapp-container'
   LOCATION: 'eastus'
 
 stages:
-- stage: BuildAndDeploy
-  displayName: Build and Deploy Docker Container
+- stage: Build
+  displayName: BuildAndPush
   jobs:
-  - job: BuildPushDeploy
-    displayName: Build, Push, and Deploy
-    steps:
+    - job: DockerBuild
+      displayName: Build Docker Image
+      steps:
+        - task: Docker@2
+          displayName: Build and Push Docker Image
+          inputs:
+            containerRegistry: 'mujjuacr-acr-sc'
+            repository: '$(IMAGE_NAME)'
+            command: 'buildAndPush'
+            Dockerfile: '**/Dockerfile'
+            tags: 'latest'
 
-    - task: AzureCLI@2
-      displayName: 'Azure Login'
-      inputs:
-        azureSubscription: 'batch11'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          echo "Azure CLI ready"
-
-    - task: AzureCLI@2
-      displayName: 'Build Docker Image'
-      inputs:
-        azureSubscription: 'batch11'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          docker build -t $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(IMAGE_TAG) .
-
-    - task: AzureCLI@2
-      displayName: 'Push Docker Image to ACR'
-      inputs:
-        azureSubscription: 'batch11'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          az acr login --name $(ACR_NAME)
-          docker push $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(IMAGE_TAG)
-
-    - task: AzureCLI@2
-      displayName: 'Deploy to Azure Container Instance'
-      inputs:
-        azureSubscription: 'batch11'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          REG_USERNAME=$(az acr credential show -n $(ACR_NAME) --query username -o tsv)
-          REG_PASSWORD=$(az acr credential show -n $(ACR_NAME) --query passwords[0].value -o tsv)
-          az container create \
-            --resource-group $(RESOURCE_GROUP) \
-            --name $(ACI_NAME) \
-            --image $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(IMAGE_TAG) \
-            --cpu 1 --memory 1 \
-            --os-type Linux \
-            --registry-login-server $(ACR_LOGIN_SERVER) \
-            --registry-username $REG_USERNAME \
-            --registry-password $REG_PASSWORD \
-            --dns-name-label $(ACI_NAME)-$RANDOM \
-            --ports 80
-
-    - task: AzureCLI@2
-      displayName: 'Verify ACI Deployment'
-      inputs:
-        azureSubscription: 'batch11'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          az container show \
-            --resource-group $(RESOURCE_GROUP) \
-            --name $(ACI_NAME) \
-            --query "{FQDN:ipAddress.fqdn,State:instanceView.state}" -o table
+- stage: Deploy
+  displayName: DeployContainers
+  dependsOn: Build
+  jobs:
+    - job: Deploy
+      displayName: Deploy Multiple Containers
+      steps:
+        - task: AzureCLI@2
+          displayName: Deploy Containers to Azure
+          inputs:
+            azureSubscription: 'batch11'
+            scriptType: 'bash'
+            scriptLocation: 'inlineScript'
+            inlineScript: |
+              az group create --name $(RESOURCE_GROUP) --location $(LOCATION)
+              for i in 1 0; do
+                az container create -g $(RESOURCE_GROUP) -n container$i \
+                  --image $(ACR_NAME).azurecr.io/$(IMAGE_NAME):latest \
+                  --cpu 1 --memory 1 \
+                  --environment-variables INPUT=$i \
+                  --registry-login-server $(ACR_NAME).azurecr.io \
+                  --registry-username 'mujjuacr123' \
+                  --registry-password $(az acr credential show --name $(ACR_NAME) --query "passwords[0].value" -o tsv)
